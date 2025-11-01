@@ -1,0 +1,129 @@
+CREATE DATABASE FarmYukti; //creating the databse
+
+-- Enables geospatial functions for the land_parcels table
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+
+
+-- 1. USERS: The central table linking to Firebase Authentication
+CREATE TABLE users (
+    firebase_uid VARCHAR(255) PRIMARY KEY,
+    phone_number VARCHAR(20) NOT NULL UNIQUE,
+    role VARCHAR(50) NOT NULL CHECK (role IN ('FARMER', 'BUYER', 'AGRONOMIST', 'TRANSPORTER', 'ADMIN')),
+    full_name VARCHAR(255),
+    agristack_id VARCHAR(11) UNIQUE,
+    agristack_verified BOOLEAN DEFAULT false,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. FARMER_PROFILES: One-to-one extension of the users table for farmers
+CREATE TABLE farmer_profiles (
+    user_uid VARCHAR(255) PRIMARY KEY REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    address_line1 VARCHAR(255),
+    city VARCHAR(100),
+    state VARCHAR(100),
+    pincode VARCHAR(10)
+);
+
+-- 3. BUYER_PROFILES: One-to-one extension of the users table for buyers
+CREATE TABLE buyer_profiles (
+    user_uid VARCHAR(255) PRIMARY KEY REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    company_name VARCHAR(255) NOT NULL,
+    gst_number VARCHAR(15) NOT NULL UNIQUE,
+    shipping_address TEXT
+);
+
+
+
+-- 4. LAND_PARCELS: Stores geo-referenced farm data for traceability
+CREATE TABLE land_parcels (
+    id SERIAL PRIMARY KEY,
+    farmer_uid VARCHAR(255) NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    agristack_land_id VARCHAR(255) UNIQUE,
+    -- Uses PostGIS: Stores GPS data (Longitude, Latitude) with SRID 4326 (WGS84 standard)
+    location GEOMETRY(Point, 4326),
+    size_in_acres DECIMAL(10, 2) NOT NULL,
+    soil_data JSONB, -- To store N-P-K values, pH, etc.
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 5. CROP_MASTER: A master list of all possible crops
+CREATE TABLE crop_master (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    variety VARCHAR(100),
+    default_image_url VARCHAR(255)
+);
+
+
+
+-- 6. LISTINGS: The core marketplace product listing from a farmer
+CREATE TABLE listings (
+    id SERIAL PRIMARY KEY,
+    farmer_uid VARCHAR(255) NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    crop_id INTEGER NOT NULL REFERENCES crop_master(id),
+    land_parcel_id INTEGER REFERENCES land_parcels(id) ON DELETE SET NULL,
+    quantity_kg DECIMAL(10, 2) NOT NULL,
+    ask_price_per_kg DECIMAL(10, 2) NOT NULL,
+    status VARCHAR(50) NOT NULL CHECK (status IN ('ACTIVE', 'IN_NEGOTIATION', 'SOLD', 'CANCELLED')),
+    ai_quality_grade VARCHAR(10),
+    ai_quality_report JSONB,
+    harvest_date DATE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 7. LISTING_MEDIA: Stores photos/videos for listings and AI grading
+CREATE TABLE listing_media (
+    id SERIAL PRIMARY KEY,
+    listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+    media_url VARCHAR(255) NOT NULL,
+    media_type VARCHAR(20) NOT NULL CHECK (media_type IN ('IMAGE', 'VIDEO')),
+    used_for_grading BOOLEAN DEFAULT false
+);
+
+-- 8. ORDERS: Represents a finalized transaction
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    listing_id INTEGER NOT NULL REFERENCES listings(id),
+    buyer_uid VARCHAR(255) NOT NULL REFERENCES users(firebase_uid),
+    farmer_uid VARCHAR(255) NOT NULL REFERENCES users(firebase_uid),
+    final_price_per_kg DECIMAL(10, 2) NOT NULL,
+    final_quantity_kg DECIMAL(10, 2) NOT NULL,
+    total_amount DECIMAL(12, 2) NOT NULL,
+    status VARCHAR(50) NOT NULL CHECK (status IN ('PENDING_PAYMENT', 'IN_ESCROW', 'SHIPPED', 'DELIVERED', 'COMPLETED', 'DISPUTED')),
+    order_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 9. ESCROW_TRANSACTIONS: Tracks the secure payment flow for each order
+CREATE TABLE escrow_transactions (
+    id SERIAL PRIMARY KEY,
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    provider_txn_id VARCHAR(255) NOT NULL,
+    status VARCHAR(50) NOT NULL CHECK (status IN ('FUNDS_COMMITTED', 'QC_VERIFIED', 'FUNDS_RELEASED', 'REFUNDED')),
+    amount DECIMAL(12, 2) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 10. SHIPMENTS: Tracks the logistics for an order
+CREATE TABLE shipments (
+    id SERIAL PRIMARY KEY,
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    transporter_uid VARCHAR(255) REFERENCES users(firebase_uid) ON DELETE SET NULL,
+    status VARCHAR(50) NOT NULL CHECK (status IN ('PENDING_PICKUP', 'IN_TRANSIT', 'DELIVERED')),
+    pickup_address TEXT,
+    delivery_address TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+
+
+
+-- 11. ADVISORY_RECORDS: Stores the results of AI recommendations
+CREATE TABLE advisory_records (
+    id SERIAL PRIMARY KEY,
+    farmer_uid VARCHAR(255) NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    land_parcel_id INTEGER REFERENCES land_parcels(id) ON DELETE SET NULL,
+    recommendation_type VARCHAR(50) NOT NULL CHECK (recommendation_type IN ('CROP', 'FERTILIZER', 'PEST_DISEASE')),
+    recommendation_data JSONB NOT NULL, -- The full JSON response from your AI model
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
